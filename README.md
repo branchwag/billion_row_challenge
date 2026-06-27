@@ -1,0 +1,97 @@
+# 1BRC — One Billion Row Challenge, in pure-safe Rust
+
+Compute the min / mean / max temperature per weather station from a
+1,000,000,000-row (~13 GB) text file of `station;temperature` lines, printed
+alphabetically as `station;min;mean;max`.
+
+```
+Hamburg;12.0;23.1;34.2
+Bulawayo;8.9;22.1;35.2
+Palembang;38.8;39.9;41.0
+```
+
+## Constraints honored
+
+- **No external crates** — `std` only.
+- **No `unsafe`, no C FFI** — 100% safe Rust.
+- Single source file for the solution (`src/main.rs`).
+- Handles any valid input: UTF-8 station names 1–100 bytes, ≤10,000 unique
+  stations, temperatures in `-99.9..=99.9`, any distribution.
+
+## How it works
+
+- The file is split into many 16 MiB **chunks** handed out via a shared atomic
+  counter, so threads on faster cores grab more work — important on
+  heterogeneous CPUs (Intel P-core + E-core). Each thread streams its chunks in
+  2 MiB blocks via the safe `FileExt::read_at`, so the 13 GB is never all held
+  in memory.
+- Each thread aggregates into a custom open-addressing hash table; station names
+  are copied once into a per-thread arena, temperatures kept as integer tenths
+  (`i16`).
+- Hot-loop tricks, all safe stable Rust: one fused pass per line (find `;` and
+  parse the value together), **SWAR** 8-byte-at-a-time `;` search, and a
+  **branchless SWAR** temperature parse (the merykitty technique).
+- Per-thread tables are merged, sorted by name, and printed in one write.
+
+The mean is rounded half-up toward +∞ to match the original Java reference's
+`Math.round`.
+
+## Build
+
+```shell
+cargo build --release
+```
+
+Produces two binaries: `brc` (the solution) and `gen` (the data generator).
+
+## Generate a measurements file
+
+The real challenge file is generated on demand and never distributed. `gen`
+reproduces the canonical distribution from the original `gunnarmorling/1brc`
+generator (the 413 real weather stations, Gaussian temperatures). It writes to
+stdout:
+
+```shell
+# Full billion rows (~13 GB — make sure you have the disk space!)
+./target/release/gen 1000000000 > measurements.txt
+
+# A smaller file for quick tests
+./target/release/gen 1000000 > measurements.txt
+```
+
+Optional second arg limits how many of the 413 stations are used:
+`gen <num_rows> [max_cities]`.
+
+## Run
+
+```shell
+./target/release/brc measurements.txt
+# (defaults to ./measurements.txt if no path is given)
+```
+
+## Test
+
+An exhaustive unit test checks the branchless parser against every valid
+temperature:
+
+```shell
+cargo test --release
+```
+
+## Benchmarks (Intel i3-1215U, 2 P-cores + 4 E-cores, 7.4 GB RAM)
+
+| Scenario | Result |
+|---|---|
+| **Full 1B rows, 13 GB file on NVMe** | **~9.5 s** (disk-bound, ~1.35 GB/s; file ≫ RAM) |
+| Warm 100M-row file in page cache | ~0.49 s (~204M rows/s) |
+
+The full 1B file (13 GB) cannot fit in this machine's 7.4 GB page cache, so each
+run is bounded by NVMe read bandwidth (~1.35 GB/s here). The warm number is the
+one that scales on the published-leaderboard hardware (≫13 GB RAM, file cached,
+many fast cores): at ~204M rows/s of pure parsing this code reaches the low-
+seconds range there.
+
+> A true 1–2 s result for a real 1B-row run requires the file to live entirely
+> in RAM (page cache) — i.e. a box with ≫13 GB RAM and many fast cores, which is
+> what the published 1BRC leaderboard numbers assume. On a small-RAM machine the
+> file can't be cached, so every run is bounded by NVMe read bandwidth.

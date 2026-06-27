@@ -1,0 +1,21 @@
+[package]
+name = "brc"
+version = "0.1.0"
+edition = "2024"
+
+# Solution: the 1BRC entry. Single source file, std-only (no external deps).
+[[bin]]
+name = "brc"
+path = "src/main.rs"
+
+# Helper: reproduces the canonical gunnarmorling/1brc data distribution
+# (413 real weather stations, Gaussian temps). Also std-only.
+[[bin]]
+name = "gen"
+path = "src/bin/gen.rs"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
