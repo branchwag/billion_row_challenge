@@ -97,3 +97,25 @@ seconds range there.
 > in RAM (page cache) — i.e. a box with ≫13 GB RAM and many fast cores, which is
 > what the published 1BRC leaderboard numbers assume. On a small-RAM machine the
 > file can't be cached, so every run is bounded by NVMe read bandwidth.
+
+### I/O vs CPU split
+
+Running the full 13 GB file a second time back-to-back (no reboot) stays flat —
+there's no warm-up speedup. The file is far larger than the usable page cache
+(~5 GB free of 7.4 GB total), so the cache thrashes: by the time a run finishes
+streaming all 13 GB, its early bytes have already been evicted, and the next run
+re-reads essentially the whole file from disk. The effective rate (~13 GB / ~10 s
+≈ 1.26 GB/s) sits right at the NVMe's bandwidth ceiling.
+
+Decomposing the work with the warm number:
+
+- **Pure parsing**: ~0.5 s for 100M warm rows → **~5 s** of actual CPU for 1B.
+- **Pure I/O**: 13 GB at ~1.3 GB/s → **~10 s**.
+
+The ~5 s of parsing is spread across 6 cores and **fully overlapped** with reading
+(threads parse their buffers while others wait on the disk), so it fits entirely
+underneath the I/O time and never extends the wall clock. Net: roughly half the
+raw work is CPU, but ~100% of the *elapsed* time is gated by the SSD. On this
+machine no hot-loop optimization moves the 1B number — only faster reads (more
+RAM to cache the file, or a faster drive) would. The ~200M rows/s parse rate only
+becomes the bottleneck where the file already fits in RAM.
