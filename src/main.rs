@@ -29,7 +29,6 @@
 //!
 //! Usage: `brc [path]`  (path defaults to `measurements.txt`).
 
-use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, Write};
 use std::os::unix::fs::FileExt;
@@ -117,6 +116,47 @@ impl Table {
                 }
                 s.sum += val as i64;
                 s.count += 1;
+                return;
+            }
+            idx = (idx + 1) & MASK;
+        }
+    }
+
+    /// Fold another table's already-aggregated entry (`name`/`hash` plus its
+    /// min/max/count/sum) into this one. Used to combine per-thread tables at
+    /// the end without a separate `HashMap`.
+    #[inline]
+    fn merge_entry(&mut self, name: &[u8], hash: u64, e: &Entry) {
+        let mut idx = (hash.wrapping_mul(PHI) >> 48) as usize & MASK;
+        loop {
+            let slot = self.slots[idx];
+            if slot.key_len == 0 {
+                let off = self.keys.len() as u32;
+                self.keys.extend_from_slice(name);
+                self.slots[idx] = Entry {
+                    key_off: off,
+                    key_len: name.len() as u32,
+                    hash,
+                    min: e.min,
+                    max: e.max,
+                    count: e.count,
+                    sum: e.sum,
+                };
+                return;
+            }
+            if slot.hash == hash
+                && slot.key_len as usize == name.len()
+                && &self.keys[slot.key_off as usize..slot.key_off as usize + name.len()] == name
+            {
+                let s = &mut self.slots[idx];
+                if e.min < s.min {
+                    s.min = e.min;
+                }
+                if e.max > s.max {
+                    s.max = e.max;
+                }
+                s.sum += e.sum;
+                s.count += e.count;
                 return;
             }
             idx = (idx + 1) & MASK;
@@ -363,13 +403,6 @@ fn fmt_tenths(buf: &mut Vec<u8>, tenths: i64) {
     buf.push(b'0' + frac);
 }
 
-struct Stat {
-    min: i16,
-    max: i16,
-    count: u64,
-    sum: i64,
-}
-
 fn main() {
     let path = std::env::args()
         .nth(1)
@@ -430,50 +463,36 @@ fn main() {
         handles.into_iter().map(|h| h.join().unwrap()).collect()
     });
 
-    // Merge per-thread tables by station name (≤10,000 entries total).
-    let mut merged: HashMap<&[u8], Stat> = HashMap::with_capacity(16_384);
-    for table in &tables {
+    // Fold every per-thread table into the first one (≤10,000 entries total),
+    // reusing the same open-addressing table instead of a separate HashMap.
+    let mut iter = tables.into_iter();
+    let mut acc = iter.next().expect("at least one thread");
+    for table in iter {
         for e in table.slots.iter() {
             if e.key_len == 0 {
                 continue;
             }
-            merged
-                .entry(table.name_of(e))
-                .and_modify(|m| {
-                    if e.min < m.min {
-                        m.min = e.min;
-                    }
-                    if e.max > m.max {
-                        m.max = e.max;
-                    }
-                    m.count += e.count;
-                    m.sum += e.sum;
-                })
-                .or_insert(Stat {
-                    min: e.min,
-                    max: e.max,
-                    count: e.count,
-                    sum: e.sum,
-                });
+            acc.merge_entry(table.name_of(e), e.hash, e);
         }
     }
 
-    let mut results: Vec<(&[u8], Stat)> = merged.into_iter().collect();
-    results.sort_unstable_by(|a, b| a.0.cmp(b.0));
+    // Collect the live entries and sort by station name.
+    let mut results: Vec<&Entry> = acc.slots.iter().filter(|e| e.key_len != 0).collect();
+    results.sort_unstable_by(|a, b| acc.name_of(a).cmp(acc.name_of(b)));
 
     // Build all output in one buffer, then write it in a single call.
     let mut out = Vec::with_capacity(results.len() * 32);
-    for (name, m) in &results {
-        out.extend_from_slice(name);
+    for e in &results {
+        out.extend_from_slice(acc.name_of(e));
         out.push(b';');
-        fmt_tenths(&mut out, m.min as i64);
+        fmt_tenths(&mut out, e.min as i64);
         out.push(b';');
         // Mean rounded to one decimal, half-up toward +inf (matches the Java
         // reference's `Math.round`): round(sum / count) in tenths.
-        let mean_tenths = (m.sum as f64 / m.count as f64 + 0.5).floor() as i64;
+        let mean_tenths = (e.sum as f64 / e.count as f64 + 0.5).floor() as i64;
         fmt_tenths(&mut out, mean_tenths);
         out.push(b';');
-        fmt_tenths(&mut out, m.max as i64);
+        fmt_tenths(&mut out, e.max as i64);
         out.push(b'\n');
     }
 
