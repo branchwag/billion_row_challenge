@@ -488,8 +488,12 @@ fn main() {
         fmt_tenths(&mut out, e.min as i64);
         out.push(b';');
         // Mean rounded to one decimal, half-up toward +inf (matches the Java
-        // reference's `Math.round`): round(sum / count) in tenths.
-        let mean_tenths = (e.sum as f64 / e.count as f64 + 0.5).floor() as i64;
+        // reference's `Math.round`), in exact integer arithmetic:
+        //   floor(sum/count + 1/2) == floor((2*sum + count) / (2*count)).
+        // `div_euclid` is floor division for a positive divisor, so this is
+        // correct for negative means too (e.g. -2.5 -> -2). No floats anywhere.
+        let count = e.count as i64;
+        let mean_tenths = (2 * e.sum + count).div_euclid(2 * count);
         fmt_tenths(&mut out, mean_tenths);
         out.push(b';');
         fmt_tenths(&mut out, e.max as i64);

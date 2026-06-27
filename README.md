@@ -34,7 +34,9 @@ Palembang;38.8;39.9;41.0
 - Per-thread tables are merged, sorted by name, and printed in one write.
 
 The mean is rounded half-up toward +∞ to match the original Java reference's
-`Math.round`.
+`Math.round`, computed in exact integer arithmetic
+(`floor((2·sum + count) / (2·count))`) — the solution uses no floating point
+at all.
 
 ## Build
 
