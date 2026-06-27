@@ -241,21 +241,12 @@ fn next_line_start(file: &File, mut off: u64, flen: u64) -> u64 {
     }
 }
 
-/// Scan the raw byte range `[r0, r1)` of the file, snapped to line boundaries
-/// (process every line whose start offset lands in this range), accumulating
-/// into `table`. `buf` is a caller-owned scratch buffer of length
-/// `BLK + MAX_LINE`, reused across calls so it is allocated/zeroed only once.
-fn scan_range(file: &File, r0: u64, r1: u64, flen: u64, buf: &mut [u8], table: &mut Table) {
-    let begin = if r0 == 0 {
-        0
-    } else {
-        next_line_start(file, r0, flen)
-    };
-    let end = if r1 >= flen {
-        flen
-    } else {
-        next_line_start(file, r1, flen)
-    };
+/// Scan the line-aligned byte range `[begin, end)` of the file (process every
+/// line that starts in this range), accumulating into `table`. The bounds must
+/// already be snapped to line starts by the caller. `buf` is a caller-owned
+/// scratch buffer of length `BLK + MAX_LINE`, reused across calls so it is
+/// allocated/zeroed only once.
+fn scan_range(file: &File, begin: u64, end: u64, buf: &mut [u8], table: &mut Table) {
     if begin >= end {
         return;
     }
@@ -403,8 +394,21 @@ fn main() {
     // Process the file as many small chunks pulled from a shared atomic
     // counter, so faster cores naturally take a larger share of the work.
     let nchunks = flen.div_ceil(CHUNK) as usize;
-    let next = std::sync::atomic::AtomicUsize::new(0);
+
+    // Snap every chunk boundary to a line start exactly once, up front, instead
+    // of re-snapping each interior boundary inside `scan_range` (where it would
+    // be done twice — as one chunk's end and the next chunk's start — and again
+    // by every thread that grabbed a neighbouring chunk). `boundaries[c]` is the
+    // start offset of chunk `c`; `boundaries[nchunks]` is the file end.
     let file = &file;
+    let mut boundaries = vec![0u64; nchunks + 1];
+    for (i, b) in boundaries.iter_mut().enumerate().take(nchunks).skip(1) {
+        *b = next_line_start(file, i as u64 * CHUNK, flen);
+    }
+    boundaries[nchunks] = flen;
+    let boundaries = &boundaries;
+
+    let next = std::sync::atomic::AtomicUsize::new(0);
     let next = &next;
     let tables: Vec<Table> = thread::scope(|s| {
         let handles: Vec<_> = (0..nthreads)
@@ -417,9 +421,7 @@ fn main() {
                         if c >= nchunks {
                             break;
                         }
-                        let r0 = c as u64 * CHUNK;
-                        let r1 = (r0 + CHUNK).min(flen);
-                        scan_range(file, r0, r1, flen, &mut buf, &mut table);
+                        scan_range(file, boundaries[c], boundaries[c + 1], &mut buf, &mut table);
                     }
                     table
                 })
