@@ -1,13 +1,11 @@
 # 1BRC — One Billion Row Challenge, in pure-safe Rust
 
 Compute the min / mean / max temperature per weather station from a
-1,000,000,000-row (~13 GB) text file of `station;temperature` lines, printed
-alphabetically as `station;min;mean;max`.
+1,000,000,000-row (~13 GB) text file of `station;temperature` lines, printed in
+the canonical 1BRC format — a single line, stations alphabetical:
 
 ```
-Hamburg;12.0;23.1;34.2
-Bulawayo;8.9;22.1;35.2
-Palembang;38.8;39.9;41.0
+{Abha=-31.9/18.0/67.3, Abidjan=-29.7/26.0/76.8, Abéché=-23.1/29.4/77.9, ...}
 ```
 
 ## Constraints honored
@@ -84,11 +82,11 @@ cargo test --release
 
 | Scenario | Result |
 |---|---|
-| **Full 1B rows, 13 GB file on NVMe** | **~9.5 s** (disk-bound, ~1.35 GB/s; file ≫ RAM) |
+| **Full 1B rows, 13 GB file on NVMe** | **~10 s** (disk-bound, ~1.37 GB/s; file ≫ RAM) |
 | Warm 100M-row file in page cache | ~0.49 s (~204M rows/s) |
 
 The full 1B file (13 GB) cannot fit in this machine's 7.4 GB page cache, so each
-run is bounded by NVMe read bandwidth (~1.35 GB/s here). The warm number is the
+run is bounded by NVMe read bandwidth (~1.37 GB/s here). The warm number is the
 one that scales on the published-leaderboard hardware (≫13 GB RAM, file cached,
 many fast cores): at ~204M rows/s of pure parsing this code reaches the low-
 seconds range there.
@@ -104,13 +102,13 @@ Running the full 13 GB file a second time back-to-back (no reboot) stays flat �
 there's no warm-up speedup. The file is far larger than the usable page cache
 (~5 GB free of 7.4 GB total), so the cache thrashes: by the time a run finishes
 streaming all 13 GB, its early bytes have already been evicted, and the next run
-re-reads essentially the whole file from disk. The effective rate (~13 GB / ~10 s
-≈ 1.26 GB/s) sits right at the NVMe's bandwidth ceiling.
+re-reads essentially the whole file from disk. The effective rate (~13.8 GB / ~10 s
+≈ 1.37 GB/s) sits right at the NVMe's bandwidth ceiling.
 
 Decomposing the work with the warm number:
 
 - **Pure parsing**: ~0.5 s for 100M warm rows → **~5 s** of actual CPU for 1B.
-- **Pure I/O**: 13 GB at ~1.3 GB/s → **~10 s**.
+- **Pure I/O**: ~13.8 GB at ~1.37 GB/s → **~10 s**.
 
 The ~5 s of parsing is spread across 6 cores and **fully overlapped** with reading
 (threads parse their buffers while others wait on the disk), so it fits entirely

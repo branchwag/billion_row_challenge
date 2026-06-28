@@ -1,8 +1,8 @@
 //! One Billion Row Challenge — pure-safe, std-only Rust solution.
 //!
 //! Computes min / mean / max temperature per weather station from a file of
-//! `station;temperature` lines (1,000,000,000 of them, ~13 GB), printed
-//! alphabetically as `station;min;mean;max`.
+//! `station;temperature` lines (1,000,000,000 of them, ~13 GB), printed in the
+//! canonical 1BRC format `{station=min/mean/max, ...}` (stations alphabetical).
 //!
 //! No external crates, no `unsafe`, no C FFI. Strategy:
 //!   * Carve the file into one byte-range per CPU, snapped to line
@@ -480,13 +480,18 @@ fn main() {
     let mut results: Vec<&Entry> = acc.slots.iter().filter(|e| e.key_len != 0).collect();
     results.sort_unstable_by(|a, b| acc.name_of(a).cmp(acc.name_of(b)));
 
-    // Build all output in one buffer, then write it in a single call.
-    let mut out = Vec::with_capacity(results.len() * 32);
-    for e in &results {
+    // Build the canonical 1BRC output in one buffer, then write it in a single
+    // call: `{Name=min/mean/max, Name=min/mean/max, ...}` on one line.
+    let mut out = Vec::with_capacity(results.len() * 32 + 2);
+    out.push(b'{');
+    for (i, e) in results.iter().enumerate() {
+        if i != 0 {
+            out.extend_from_slice(b", ");
+        }
         out.extend_from_slice(acc.name_of(e));
-        out.push(b';');
+        out.push(b'=');
         fmt_tenths(&mut out, e.min as i64);
-        out.push(b';');
+        out.push(b'/');
         // Mean rounded to one decimal, half-up toward +inf (matches the Java
         // reference's `Math.round`), in exact integer arithmetic:
         //   floor(sum/count + 1/2) == floor((2*sum + count) / (2*count)).
@@ -495,10 +500,10 @@ fn main() {
         let count = e.count as i64;
         let mean_tenths = (2 * e.sum + count).div_euclid(2 * count);
         fmt_tenths(&mut out, mean_tenths);
-        out.push(b';');
+        out.push(b'/');
         fmt_tenths(&mut out, e.max as i64);
-        out.push(b'\n');
     }
+    out.extend_from_slice(b"}\n");
 
     let stdout = io::stdout();
     stdout.lock().write_all(&out).expect("write failed");
