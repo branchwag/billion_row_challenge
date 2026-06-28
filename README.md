@@ -25,7 +25,9 @@ the canonical 1BRC format — a single line, stations alphabetical:
   in memory.
 - Each thread aggregates into a custom open-addressing hash table; station names
   are copied once into a per-thread arena, temperatures kept as integer tenths
-  (`i16`).
+  (`i16`). Each measurement updates the slot's running min / max / sum / count in
+  place, with branchless `min`/`max` and the slot accessed by reference (no
+  per-probe `Entry` copy).
 - Hot-loop tricks, all safe stable Rust: one fused pass per line (find `;` and
   parse the value together), **SWAR** 8-byte-at-a-time `;` search, and a
   **branchless SWAR** temperature parse (the merykitty technique).

@@ -88,7 +88,7 @@ impl Table {
     fn record(&mut self, name: &[u8], hash: u64, val: i16) {
         let mut idx = (hash.wrapping_mul(PHI) >> 48) as usize & MASK;
         loop {
-            let e = self.slots[idx]; // Entry is Copy
+            let e = &self.slots[idx];
             if e.key_len == 0 {
                 let off = self.keys.len() as u32;
                 self.keys.extend_from_slice(name);
@@ -108,12 +108,8 @@ impl Table {
                 && &self.keys[e.key_off as usize..e.key_off as usize + name.len()] == name
             {
                 let s = &mut self.slots[idx];
-                if val < s.min {
-                    s.min = val;
-                }
-                if val > s.max {
-                    s.max = val;
-                }
+                s.min = s.min.min(val);
+                s.max = s.max.max(val);
                 s.sum += val as i64;
                 s.count += 1;
                 return;
