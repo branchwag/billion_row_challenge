@@ -47,7 +47,11 @@ struct Entry {
     hash: u64,
     min: i16,
     max: i16,
-    count: u64,
+    // Per-station row count. u32 holds up to ~4.29e9, comfortably above the
+    // 1e9-row total even if one station dominated every line. Keeping the
+    // struct at 32 B (not 40) means an 8-aligned `Entry` never straddles a
+    // 64-byte cache line, so each probe touches a single line.
+    count: u32,
     sum: i64,
 }
 
