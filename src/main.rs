@@ -44,13 +44,13 @@ struct Entry {
     // `key_len == 0` marks an empty slot (names have a minimum length of 1).
     key_off: u32,
     key_len: u32,
-    hash: u64,
     min: i16,
     max: i16,
     // Per-station row count. u32 holds up to ~4.29e9, comfortably above the
-    // 1e9-row total even if one station dominated every line. Keeping the
-    // struct at 32 B (not 40) means an 8-aligned `Entry` never straddles a
-    // 64-byte cache line, so each probe touches a single line.
+    // 1e9-row total even if one station dominated every line. With no stored
+    // hash (we re-derive the slot from the caller's hash and confirm hits by
+    // length + bytes), `Entry` is 24 B, so an 8-aligned slot never straddles a
+    // 64-byte cache line and each probe touches a single line.
     count: u32,
     sum: i64,
 }
@@ -58,7 +58,6 @@ struct Entry {
 const EMPTY: Entry = Entry {
     key_off: 0,
     key_len: 0,
-    hash: 0,
     min: 0,
     max: 0,
     count: 0,
@@ -99,7 +98,6 @@ impl Table {
                 self.slots[idx] = Entry {
                     key_off: off,
                     key_len: name.len() as u32,
-                    hash,
                     min: val,
                     max: val,
                     count: 1,
@@ -107,8 +105,7 @@ impl Table {
                 };
                 return;
             }
-            if e.hash == hash
-                && e.key_len as usize == name.len()
+            if e.key_len as usize == name.len()
                 && &self.keys[e.key_off as usize..e.key_off as usize + name.len()] == name
             {
                 let s = &mut self.slots[idx];
@@ -122,11 +119,13 @@ impl Table {
         }
     }
 
-    /// Fold another table's already-aggregated entry (`name`/`hash` plus its
+    /// Fold another table's already-aggregated entry (`name` plus its
     /// min/max/count/sum) into this one. Used to combine per-thread tables at
-    /// the end without a separate `HashMap`.
+    /// the end without a separate `HashMap`. The slot is found by re-hashing
+    /// `name` (entries no longer carry a stored hash).
     #[inline]
-    fn merge_entry(&mut self, name: &[u8], hash: u64, e: &Entry) {
+    fn merge_entry(&mut self, name: &[u8], e: &Entry) {
+        let hash = hash_name(name);
         let mut idx = (hash.wrapping_mul(PHI) >> 48) as usize & MASK;
         loop {
             let slot = self.slots[idx];
@@ -136,7 +135,6 @@ impl Table {
                 self.slots[idx] = Entry {
                     key_off: off,
                     key_len: name.len() as u32,
-                    hash,
                     min: e.min,
                     max: e.max,
                     count: e.count,
@@ -144,8 +142,7 @@ impl Table {
                 };
                 return;
             }
-            if slot.hash == hash
-                && slot.key_len as usize == name.len()
+            if slot.key_len as usize == name.len()
                 && &self.keys[slot.key_off as usize..slot.key_off as usize + name.len()] == name
             {
                 let s = &mut self.slots[idx];
@@ -472,7 +469,7 @@ fn main() {
             if e.key_len == 0 {
                 continue;
             }
-            acc.merge_entry(table.name_of(e), e.hash, e);
+            acc.merge_entry(table.name_of(e), e);
         }
     }
 
